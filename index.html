@@ -364,12 +364,20 @@ function showLobby(){
       '</div>'+
     '</div>'
   );
-  dbOn('gameState','value',function(snap){
-    if(snap.val()==='active'){dbOff();curQ=0;score=0;showQuestion();}
+
+  // عند تحول حالة اللعبة إلى active ننتقل لعرض الأسئلة (لا نستدعي dbOff() هنا)
+  dbOn('gameState','value', function(snap){
+    if(snap.val() === 'active'){
+      curQ = 0;
+      score = 0;
+      showQuestion();
+    }
   });
-  dbOn('players','value',function(snap){
-    var el=document.getElementById('lobbyCount');
-    if(el) el.textContent=toAr(snap.numChildren())+' طالبة في صالة الانتظار';
+
+  // تحديث عدّاد الطالبات في الصالة بشكل حيّ
+  dbOn('players','value', function(snap){
+    var el = document.getElementById('lobbyCount');
+    if(el) el.textContent = toAr(snap.numChildren()) + ' طالبة في صالة الانتظار';
   });
 }
 
@@ -487,25 +495,32 @@ function restart(){curQ=0;score=0;answered=false;playerAvatar='';showNameEntry()
    TEACHER DASHBOARD
 ══════════════════════════════════════ */
 function showTeacher(){
-  teacherTab='students';
+  // نترك المستمعات تعمل هنا حتى تستمر التحديثات الحيّة
+  teacherTab = 'students';
   renderTeacher();
-  /* live listeners */
-  db.ref('gameState').on('value',function(snap){
-    var s=snap.val()||'waiting';
-    var badge=document.getElementById('statusBadge'),btn=document.getElementById('btnStart');
+
+  /* مستمع لحالة اللعبة */
+  dbOn('gameState','value', function(snap){
+    var s = snap.val() || 'waiting';
+    var badge = document.getElementById('statusBadge'), btn = document.getElementById('btnStart');
     if(!badge) return;
-    if(s==='active'){
-      badge.textContent='▶ اللعبة جارية'; badge.style.background='linear-gradient(135deg,#66bb6a,#43a047)';
-      if(btn){btn.textContent='⏹ أوقف';btn.onclick=tStop;}
-    } else if(s==='finished'){
-      badge.textContent='✅ انتهت'; badge.style.background='linear-gradient(135deg,#9fa8da,#7986cb)';
-      if(btn){btn.textContent='▶ ابدأ مجدداً';btn.onclick=tStart;}
+    if(s === 'active'){
+      badge.textContent = '▶ اللعبة جارية';
+      badge.style.background = 'linear-gradient(135deg,#66bb6a,#43a047)';
+      if(btn){ btn.textContent = '⏹ أوقف'; btn.onclick = tStop; }
+    } else if(s === 'finished'){
+      badge.textContent = '✅ انتهت';
+      badge.style.background = 'linear-gradient(135deg,#9fa8da,#7986cb)';
+      if(btn){ btn.textContent = '▶ ابدأ مجدداً'; btn.onclick = tStart; }
     } else {
-      badge.textContent='⏸ في الانتظار'; badge.style.background='linear-gradient(135deg,#f48fb1,#ce93d8)';
-      if(btn){btn.textContent='▶ ابدأ اللعبة';btn.onclick=tStart;}
+      badge.textContent = '⏸ في الانتظار';
+      badge.style.background = 'linear-gradient(135deg,#f48fb1,#ce93d8)';
+      if(btn){ btn.textContent = '▶ ابدأ اللعبة'; btn.onclick = tStart; }
     }
   });
-  db.ref('players').on('value',function(snap){
+
+  /* مستمع لقائمة اللاعبات لتحديث اللوحة مباشرة */
+  dbOn('players','value', function(snap){
     updateLobby(snap);
     updateStudentTable(snap);
   });
