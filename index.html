@@ -329,6 +329,9 @@ function pickAvatar(id){
   var w=document.getElementById('avWarn'); if(w) w.style.display='none';
 }
 
+// joinGame — use push() to create a unique player record (prevents overwrites when names collide)
+var playerKey = null;
+
 function joinGame(){
   var inp=document.getElementById('nameInput');
   var raw=inp?inp.value.trim():'';
@@ -339,9 +342,23 @@ function joinGame(){
     return;
   }
   playerName=raw; playerAvatar=selectedAvatar;
-  var key=sanitizeKey(playerName);
-  dbSet('players/'+key,{name:playerName,avatar:playerAvatar,joinedAt:Date.now(),currentQuestion:0,score:0,finished:false}).then(function(){
-    if(firebaseOK) showLobby(); else {curQ=0;score=0;showQuestion();}
+
+  if(!firebaseOK||!db){
+    // offline fallback
+    curQ=0; score=0; showQuestion();
+    return;
+  }
+
+  // create a unique player node with push(), store the key locally
+  var ref = db.ref('players').push();
+  playerKey = ref.key;
+  var payload = { name: playerName, avatar: playerAvatar, joinedAt: Date.now(), currentQuestion:0, score:0, finished:false, key: playerKey };
+  ref.set(payload).then(function(){
+    showLobby();
+  }).catch(function(e){
+    console.warn('joinGame:', e);
+    // fallback
+    showLobby();
   });
 }
 
@@ -365,14 +382,19 @@ function showLobby(){
     '</div>'
   );
 
-  // عند تحول حالة اللعبة إلى active ننتقل لعرض الأسئلة (لا نستدعي dbOff() هنا)
+  // لا نستدعي dbOff() هنا — لانها ستزيل كل listeners
   dbOn('gameState','value', function(snap){
     if(snap.val() === 'active'){
-      curQ = 0;
-      score = 0;
+      curQ = 0; score = 0;
       showQuestion();
     }
   });
+
+  dbOn('players','value', function(snap){
+    var el = document.getElementById('lobbyCount');
+    if(el) el.textContent = toAr(snap.numChildren()) + ' طالبة في صالة الانتظار';
+  });
+}
 
   // تحديث عدّاد الطالبات في الصالة بشكل حيّ
   dbOn('players','value', function(snap){
