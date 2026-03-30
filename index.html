@@ -137,10 +137,59 @@ function escH(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').re
 function render(html){ document.getElementById('app').innerHTML = html; }
 function dbSet(p,v){ if(!firebaseOK||!db) return Promise.resolve(); return db.ref(p).set(v).catch(function(e){console.warn(e);}); }
 function dbUpd(p,v){ if(!firebaseOK||!db) return Promise.resolve(); return db.ref(p).update(v).catch(function(e){console.warn(e);}); }
-var _listeners = [];
-function dbOn(path,evt,cb){ if(!firebaseOK||!db) return; var r=db.ref(path); r.on(evt,cb); _listeners.push({r:r,e:evt,c:cb}); }
-function dbOff(){ _listeners.forEach(function(l){try{l.r.off(l.e,l.c);}catch(e){}}); _listeners=[]; }
-function sanitizeKey(s){ return s.replace(/[.#$\[\]/]/g,'_'); }
+// global variable to keep the player's DB key in this session
+var playerKey = null;
+
+function joinGame(){
+  var inp = document.getElementById('nameInput');
+  var raw = inp ? inp.value.trim() : '';
+  if(!raw){ shakeEl('nameInput'); return; }
+  if(!selectedAvatar){
+    var w = document.getElementById('avWarn');
+    if(w){ w.style.display='block'; shakeEl('avWarn'); }
+    return;
+  }
+
+  playerName = raw;
+  playerAvatar = selectedAvatar;
+
+  if(!firebaseOK || !db){
+    // offline fallback: continue locally
+    curQ = 0; score = 0; showQuestion();
+    return;
+  }
+
+  // create a unique player node
+  var ref = db.ref('players').push();
+  playerKey = ref.key;
+
+  var payload = {
+    name: playerName,
+    avatar: playerAvatar,
+    joinedAt: Date.now(),
+    currentQuestion: 0,
+    score: 0,
+    finished: false,
+    online: true,
+    lastSeen: Date.now()
+  };
+
+  // set the record and configure onDisconnect to mark offline/lastSeen
+  ref.set(payload).then(function(){
+    // ensure onDisconnect updates online=false and records lastSeen
+    try {
+      ref.onDisconnect().update({ online: false, lastSeen: Date.now() });
+    } catch(e){
+      // some environments may not support onDisconnect; ignore safely
+      console.warn('onDisconnect not available', e);
+    }
+    showLobby();
+  }).catch(function(e){
+    console.warn('joinGame set failed', e);
+    // fallback to lobby view so user can continue locally
+    showLobby();
+  });
+}
 
 /* ══════════════════════════════════════
    AVATARS  (SVG redesigned)
@@ -332,23 +381,31 @@ function pickAvatar(id){
 // joinGame — use push() to create a unique player record (prevents overwrites when names collide)
 var playerKey = null;
 
-function joinGame(){
-  var inp=document.getElementById('nameInput');
-  var raw=inp?inp.value.trim():'';
-  if(!raw){shakeEl('nameInput');return;}
-  if(!selectedAvatar){
-    var w=document.getElementById('avWarn');
-    if(w){w.style.display='block';shakeEl('avWarn');}
+function updateLobby(snap){
+  var d = document.getElementById('lobbyList'), b = document.getElementById('onlineBadge');
+  if(!d) return;
+  var data = snap.val();
+  if(!data || !Object.keys(data).length){
+    d.innerHTML = '<p style="color:#9e9e9e;font-size:.85rem;text-align:center">لم تنضم طالبات بعد...</p>';
+    if(b) b.textContent = '٠ متواجدات';
     return;
   }
-  playerName=raw; playerAvatar=selectedAvatar;
-
-  if(!firebaseOK||!db){
-    // offline fallback
-    curQ=0; score=0; showQuestion();
-    return;
-  }
-
+  var ps = Object.values(data);
+  if(b) b.textContent = toAr(ps.length) + ' متواجدة';
+  var h = '';
+  ps.forEach(function(p){
+    var isOnline = !!p.online;
+    h += '<div class="lobby-card">'+
+           avSvg(p.avatar||'star',28)+
+           '<span style="font-weight:700;color:#37474f;font-size:.9rem">'+escH(p.name)+'</span>'+
+           (isOnline
+             ? '<span style="margin-right:auto;font-size:.72rem;padding:.15rem .6rem;border-radius:9999px;background:#e8f5e9;color:#2e7d32;font-weight:700">● متصلة</span>'
+             : '<span style="margin-right:auto;font-size:.72rem;padding:.15rem .6rem;border-radius:9999px;background:#f3e5f5;color:#9e9e9e;font-weight:700">● غير متصلة</span>'
+           ) +
+         '</div>';
+  });
+  d.innerHTML = h;
+}
   // create a unique player node with push(), store the key locally
   var ref = db.ref('players').push();
   playerKey = ref.key;
@@ -382,26 +439,20 @@ function showLobby(){
     '</div>'
   );
 
-  // لا نستدعي dbOff() هنا — لانها ستزيل كل listeners
+  // عند تحول الحالة إلى active ننتقل لعرض الأسئلة؛ لا ننادي dbOff()
   dbOn('gameState','value', function(snap){
     if(snap.val() === 'active'){
-      curQ = 0; score = 0;
-      showQuestion();
+      curQ = 0; score = 0; showQuestion();
     }
   });
 
+  // تحديث عداد الطالبات في الصالة
   dbOn('players','value', function(snap){
     var el = document.getElementById('lobbyCount');
     if(el) el.textContent = toAr(snap.numChildren()) + ' طالبة في صالة الانتظار';
   });
 }
 
-  // تحديث عدّاد الطالبات في الصالة بشكل حيّ
-  dbOn('players','value', function(snap){
-    var el = document.getElementById('lobbyCount');
-    if(el) el.textContent = toAr(snap.numChildren()) + ' طالبة في صالة الانتظار';
-  });
-}
 
 /* ══════════════════════════════════════
    QUESTION
@@ -517,8 +568,8 @@ function restart(){curQ=0;score=0;answered=false;playerAvatar='';showNameEntry()
    TEACHER DASHBOARD
 ══════════════════════════════════════ */
 function showTeacher(){
-  // نترك المستمعات تعمل هنا حتى تستمر التحديثات الحيّة
-  teacherTab = 'students';
+  // لا ننادي dbOff() هنا لتبقى المستمعات متصلة
+  teacherTab='students';
   renderTeacher();
 
   /* مستمع لحالة اللعبة */
@@ -527,17 +578,14 @@ function showTeacher(){
     var badge = document.getElementById('statusBadge'), btn = document.getElementById('btnStart');
     if(!badge) return;
     if(s === 'active'){
-      badge.textContent = '▶ اللعبة جارية';
-      badge.style.background = 'linear-gradient(135deg,#66bb6a,#43a047)';
-      if(btn){ btn.textContent = '⏹ أوقف'; btn.onclick = tStop; }
+      badge.textContent = '▶ اللعبة جارية'; badge.style.background = 'linear-gradient(135deg,#66bb6a,#43a047)';
+      if(btn){ btn.textContent='⏹ أوقف'; btn.onclick = tStop; }
     } else if(s === 'finished'){
-      badge.textContent = '✅ انتهت';
-      badge.style.background = 'linear-gradient(135deg,#9fa8da,#7986cb)';
-      if(btn){ btn.textContent = '▶ ابدأ مجدداً'; btn.onclick = tStart; }
+      badge.textContent = '✅ انتهت'; badge.style.background = 'linear-gradient(135deg,#9fa8da,#7986cb)';
+      if(btn){ btn.textContent='▶ ابدأ مجدداً'; btn.onclick = tStart; }
     } else {
-      badge.textContent = '⏸ في الانتظار';
-      badge.style.background = 'linear-gradient(135deg,#f48fb1,#ce93d8)';
-      if(btn){ btn.textContent = '▶ ابدأ اللعبة'; btn.onclick = tStart; }
+      badge.textContent = '⏸ في الانتظار'; badge.style.background = 'linear-gradient(135deg,#f48fb1,#ce93d8)';
+      if(btn){ btn.textContent='▶ ابدأ اللعبة'; btn.onclick = tStart; }
     }
   });
 
@@ -642,19 +690,24 @@ function updateLobby(snap){
   if(!d) return;
   var data=snap.val();
   if(!data||!Object.keys(data).length){
-    d.innerHTML='<p style="color:#9e9e9e;font-size:.85rem;text-align:center">لم تنضم طالبات بعد...</p>';
-    if(b) b.textContent='٠ متواجدات'; return;
+    d.innerHTML = '<p style="color:#9e9e9e;font-size:.85rem;text-align:center">لم تنضم طالبات بعد...</p>';
+    if(b) b.textContent='٠ متواجدات';
+    return;
   }
   var ps=Object.values(data);
-  if(b) b.textContent=toAr(ps.length)+' متواجدة';
+  if(b) b.textContent = toAr(ps.length) + ' متواجدة';
   var h='';
   ps.forEach(function(p){
-    h+='<div class="lobby-card">'+avSvg(p.avatar||'star',28)+
-       '<span style="font-weight:700;color:#37474f;font-size:.9rem">'+escH(p.name)+'</span>'+
-       '<span style="margin-right:auto;font-size:.72rem;padding:.15rem .6rem;border-radius:9999px;background:#e8f5e9;color:#2e7d32;font-weight:700">● متصلة</span>'+
-       '</div>';
+    var isOnline = !!p.online;
+    h += '<div class="lobby-card">'+avSvg(p.avatar||'star',28)+
+         '<span style="font-weight:700;color:#37474f;font-size:.9rem">'+escH(p.name)+'</span>'+
+         (isOnline
+           ? '<span style="margin-right:auto;font-size:.72rem;padding:.15rem .6rem;border-radius:9999px;background:#e8f5e9;color:#2e7d32;font-weight:700">● متصلة</span>'
+           : '<span style="margin-right:auto;font-size:.72rem;padding:.15rem .6rem;border-radius:9999px;background:#f3e5f5;color:#9e9e9e;font-weight:700">● غير متصلة</span>'
+         )+
+         '</div>';
   });
-  d.innerHTML=h;
+  d.innerHTML = h;
 }
 
 function updateStudentTable(snap){
@@ -662,21 +715,28 @@ function updateStudentTable(snap){
   if(!tbody) return;
   var data=snap.val();
   if(!data||!Object.keys(data).length){
-    tbody.innerHTML='<tr><td colspan="6" style="text-align:center;color:#9e9e9e;padding:2rem;font-size:.88rem">لم تنضم طالبات بعد...</td></tr>';
-    if(badge) badge.textContent='٠ طالبات'; return;
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#9e9e9e;padding:2rem;font-size:.88rem">لم تنضم طالبات بعد...</td></tr>';
+    if(badge) badge.textContent='٠ طالبات';
+    return;
   }
   var ps=Object.values(data).sort(function(a,b){ return (b.score||0)-(a.score||0); });
-  if(badge) badge.textContent=toAr(ps.length)+' طالبة';
+  if(badge) badge.textContent = toAr(ps.length) + ' طالبة';
   var tot=QUESTIONS.length, rows='';
   ps.forEach(function(p,i){
     var cq=Math.min(p.currentQuestion||0,tot), pct=Math.round(cq/tot*100);
     var medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
-    var st=p.finished
-      ? '<span style="color:#2e7d32;font-weight:900;font-size:.78rem">✅ أنهت</span>'
-      : cq===0
-        ? '<span style="color:#9e9e9e;font-size:.78rem">⏳ تنتظر</span>'
-        : '<span style="color:#c2185b;font-weight:900;font-size:.78rem">🎮 تلعب</span>';
-    rows+='<tr class="t-row">'+
+    var statusHtml;
+    if(p.finished){
+      statusHtml = '<span style="color:#2e7d32;font-weight:900;font-size:.78rem">✅ أنهت</span>';
+    } else if(p.online){
+      statusHtml = '<span style="color:#2e7d32;font-weight:900;font-size:.78rem">● متصلة</span>';
+    } else if(cq===0){
+      statusHtml = '<span style="color:#9e9e9e;font-size:.78rem">⏳ تنتظر</span>';
+    } else {
+      statusHtml = '<span style="color:#c2185b;font-weight:900;font-size:.78rem">🎮 تلعب</span>';
+    }
+
+    rows += '<tr class="t-row">'+
       '<td style="font-weight:900;color:#37474f">'+medal+' '+escH(p.name)+'</td>'+
       '<td style="text-align:center">'+
         '<div style="display:flex;flex-direction:column;align-items:center;gap:2px">'+
@@ -690,10 +750,10 @@ function updateStudentTable(snap){
         '<div style="background:#fce4ec;border-radius:9999px;overflow:hidden;height:7px"><div class="s-bar" style="width:'+pct+'%"></div></div>'+
         '<div style="font-size:.68rem;color:#9e9e9e;text-align:center;margin-top:2px">'+toAr(pct)+'٪</div>'+
       '</td>'+
-      '<td style="text-align:center">'+st+'</td>'+
+      '<td style="text-align:center">'+statusHtml+'</td>'+
     '</tr>';
   });
-  tbody.innerHTML=rows;
+  tbody.innerHTML = rows;
 }
 
 /* ── Questions tab ── */
